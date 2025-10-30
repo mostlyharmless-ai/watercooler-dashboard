@@ -4,7 +4,8 @@ import os
 import re
 from pathlib import Path
 from typing import Any
-from datetime import datetime
+
+ThreadData = dict[str, Any]
 
 
 class ThreadParser:
@@ -19,6 +20,43 @@ class ThreadParser:
         """
         self.threads_base = self._resolve_threads_base(threads_base)
 
+    # ------------------------------------------------------------------
+    # Repository discovery helpers
+    # ------------------------------------------------------------------
+
+    def list_repositories(self) -> list[Path]:
+        """Return all thread repositories discovered under the base path."""
+
+        if not self.threads_base.exists():
+            return []
+
+        repos = [
+            item
+            for item in self.threads_base.iterdir()
+            if item.is_dir() and item.name.endswith("-threads")
+        ]
+
+        return sorted(repos, key=lambda path: path.name.lower())
+
+    def get_threads_by_repo(self) -> dict[str, list[ThreadData]]:
+        """Return thread metadata grouped by repository display name."""
+
+        grouped: dict[str, list[ThreadData]] = {}
+        for repo_path in self.list_repositories():
+            repo_name = self._repo_display_name(repo_path)
+            grouped[repo_name] = self._collect_threads(repo_path, repo_name=repo_name)
+
+        return grouped
+
+    def get_threads_for_repo(self, repo_name: str) -> list[ThreadData]:
+        """Return threads for a single repository by its display name."""
+
+        for repo_path in self.list_repositories():
+            if self._repo_display_name(repo_path) == repo_name:
+                return self._collect_threads(repo_path, repo_name=repo_name)
+
+        return []
+
     def _resolve_threads_base(self, threads_base: str | None) -> Path:
         """Resolve the threads base directory."""
         if threads_base:
@@ -30,21 +68,6 @@ class ThreadParser:
 
         return Path.home() / ".watercooler-threads"
 
-    def _find_threads_repo(self) -> Path | None:
-        """Find the threads repository for the current context.
-
-        This will use Watercooler's git-aware resolution logic.
-        For now, we'll look for *-threads directories.
-        """
-        if not self.threads_base.exists():
-            return None
-
-        # Look for thread repositories in the base directory
-        for item in self.threads_base.iterdir():
-            if item.is_dir() and item.name.endswith("-threads"):
-                return item
-
-        return None
 
     def get_all_threads(self) -> list[dict[str, Any]]:
         """Get all threads from the threads repository.
@@ -52,21 +75,28 @@ class ThreadParser:
         Returns:
             List of thread metadata dictionaries.
         """
-        threads_repo = self._find_threads_repo()
-        if not threads_repo:
-            return []
+        threads: list[ThreadData] = []
 
-        threads = []
-        # Look for .md files in the threads repository
-        for thread_file in threads_repo.rglob("*.md"):
-            if thread_file.name == "README.md" or thread_file.name == "INDEX.md":
+        for repo_path in self.list_repositories():
+            repo_threads = self._collect_threads(repo_path, repo_name=self._repo_display_name(repo_path))
+            threads.extend(repo_threads)
+
+        return threads
+
+    def _collect_threads(self, repo_path: Path, repo_name: str) -> list[ThreadData]:
+        """Collect thread metadata for a single repository."""
+
+        threads: list[ThreadData] = []
+        for thread_file in repo_path.rglob("*.md"):
+            if thread_file.name in {"README.md", "INDEX.md"}:
                 continue
 
             thread_data = self._parse_thread_file(thread_file)
             if thread_data:
+                thread_data["repo"] = repo_name
                 threads.append(thread_data)
 
-        return threads
+        return sorted(threads, key=lambda thread: thread["topic"].lower())
 
     def _parse_thread_file(self, file_path: Path) -> dict[str, Any] | None:
         """Parse a single thread file.
@@ -95,6 +125,9 @@ class ThreadParser:
             )
             last_update = timestamps[-1] if timestamps else created
 
+            titles = re.findall(r"^Title:\s*(.+)$", content, re.MULTILINE)
+            last_title = titles[-1] if titles else None
+
             # Check for NEW markers
             has_new = "NEW" in content
 
@@ -107,6 +140,7 @@ class ThreadParser:
                 "entry_count": entry_count,
                 "has_new": has_new,
                 "file_path": str(file_path),
+                "last_title": last_title,
             }
         except Exception as e:
             print(f"Error parsing {file_path}: {e}")
@@ -125,3 +159,9 @@ class ThreadParser:
         pattern = rf"^{field_name}:\s*(.+)$"
         match = re.search(pattern, content, re.MULTILINE)
         return match.group(1).strip() if match else None
+
+    def _repo_display_name(self, repo_path: Path) -> str:
+        """Derive a human-friendly repository name."""
+
+        name = repo_path.name
+        return name[:-8] if name.endswith("-threads") else name

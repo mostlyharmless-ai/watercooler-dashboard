@@ -56,10 +56,25 @@ The dashboard service:
    # Edit .env with your Slack credentials
    ```
 
-5. Run the app:
+5. Run the Slack app:
    ```bash
    uv run python -m watercooler_dashboard
    ```
+
+### Local Dashboard (Preview)
+
+For a quick local view outside of Slack, a lightweight web dashboard is available:
+
+```bash
+uv run python -m watercooler_dashboard.local_app
+```
+
+The server listens on `http://127.0.0.1:8080` by default. From there you can:
+
+- Point the dashboard at a local `*-threads` directory (saved per session).
+- Switch between repositories via tabs.
+- Reorder repositories and threads to build a personal priority list.
+- Jump directly to a thread's markdown file on disk.
 
 ## Configuration
 
