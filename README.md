@@ -2,6 +2,8 @@
 
 A Slack app that provides a live dashboard view of Watercooler threads across your projects.
 
+> **Note**: This branch (`html-feature-testing`) is testing HTML rendering features for thread display.
+
 ## Overview
 
 The Watercooler Dashboard displays:
