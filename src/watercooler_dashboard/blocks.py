@@ -130,16 +130,17 @@ def _build_thread_blocks(thread: dict[str, Any]) -> list[dict]:
     # Thread name with NEW marker
     new_marker = " :sparkles: *NEW*" if thread["has_new"] else ""
     ball_marker = " :tennis:" if thread.get("has_ball") else ""
+    topic_text = _escape_mrkdwn(thread.get("topic"))
 
     blocks.append(
         {
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{thread['topic']}*{new_marker}{ball_marker}",
-            },
-        }
-    )
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{topic_text}*{new_marker}{ball_marker}",
+                },
+            }
+        )
 
     # Thread details
     blocks.append(
@@ -148,7 +149,10 @@ def _build_thread_blocks(thread: dict[str, Any]) -> list[dict]:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"Ball: *{thread['ball_owner']}* | Entries: {thread['entry_count']} | Last: {_format_timestamp(thread['last_update'])}",
+                    "text": (
+                        f"Ball: *{_escape_mrkdwn(thread.get('ball_owner'))}* | "
+                        f"Entries: {thread['entry_count']} | Last: {_format_timestamp(thread['last_update'])}"
+                    ),
                 }
             ],
         }
@@ -192,3 +196,12 @@ def _format_timestamp(timestamp: str | None) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         return timestamp
+
+
+def _escape_mrkdwn(value: Any) -> str:
+    text = str(value or "")
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )

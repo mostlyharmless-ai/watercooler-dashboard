@@ -71,3 +71,106 @@ Body
     assert set(grouped.keys()) == {"alpha", "beta"}
     assert grouped["alpha"][0]["topic"] == "thread-one"
     assert grouped["beta"][0]["status"] == "IN_REVIEW"
+
+
+def test_entry_parser_ignores_internal_horizontal_rules(tmp_path):
+    """Ensure entry parsing does not treat body '---' as new entries."""
+
+    repo = tmp_path / "gamma-threads"
+    repo.mkdir()
+
+    thread_path = repo / "thread.md"
+    thread_path.write_text(
+        """# thread
+Status: OPEN
+Ball: Codex
+Created: 2025-11-03T00:00:00Z
+
+---
+Entry: Codex 2025-11-03T00:00:00Z
+Role: implementer
+Type: Note
+Title: Example entry
+
+First paragraph before rule.
+
+---
+
+Second paragraph after rule.
+"""
+    )
+
+    parser = ThreadParser(threads_base=str(tmp_path))
+    data = parser._parse_thread_file(thread_path)
+
+    assert data is not None
+    assert data["entry_count"] == 1
+    entry = data["entries"][0]
+    assert "First paragraph" in entry["body"]
+    assert "Second paragraph" in entry["body"]
+    assert entry.get("is_new") is False
+
+
+def test_last_entry_marked_new_when_ball_differs(tmp_path):
+    repo = tmp_path / "delta-threads"
+    repo.mkdir()
+    thread_path = repo / "thread.md"
+    thread_path.write_text(
+        """# thread
+Status: OPEN
+Ball: Codex (caleb)
+Created: 2025-11-03T00:00:00Z
+
+---
+Entry: Codex (caleb) 2025-11-03T01:00:00Z
+Role: implementer
+Type: Note
+Title: First
+
+Initial update.
+
+---
+Entry: Claude (caleb) 2025-11-03T02:00:00Z
+Role: implementer
+Type: Note
+Title: Follow-up
+
+Follow-up update.
+""",
+        encoding="utf-8",
+    )
+
+    parser = ThreadParser(threads_base=str(tmp_path))
+    data = parser._parse_thread_file(thread_path)
+    assert data is not None
+    assert data["has_new"] is True
+    assert data["entries"][-1]["is_new"] is True
+    assert data["entries"][0]["is_new"] is False
+
+
+def test_closed_thread_not_marked_new(tmp_path):
+    repo = tmp_path / "epsilon-threads"
+    repo.mkdir()
+    thread_path = repo / "thread.md"
+    thread_path.write_text(
+        """# thread
+Status: CLOSED
+Ball: Codex (caleb)
+Created: 2025-11-03T00:00:00Z
+
+---
+Entry: Claude (caleb) 2025-11-03T01:00:00Z
+Role: implementer
+Type: Note
+Title: Review
+
+All good.
+""",
+        encoding="utf-8",
+    )
+
+    parser = ThreadParser(threads_base=str(tmp_path))
+    data = parser._parse_thread_file(thread_path)
+    assert data is not None
+    assert data["has_new"] is False
+    assert not data["entries"][-1]["is_new"]

@@ -1,12 +1,12 @@
 # Watercooler Dashboard
 
-A Slack app that provides a live dashboard view of Watercooler threads across your projects.
+A lightweight HTML dashboard for reviewing Watercooler threads locally.
 
-> **Note**: This branch (`html-feature-testing`) is testing HTML rendering features for thread display.
+> **Roadmap:** This project began as a Slack App Home prototype. Slack support is still planned, but the current focus is the standalone HTML experience described here.
 
 ## Overview
 
-The Watercooler Dashboard displays:
+The HTML dashboard displays:
 - Active threads list
 - Status for each thread
 - Ball owner (who has the action)
@@ -16,10 +16,12 @@ The Watercooler Dashboard displays:
 
 ## Features
 
-- **App Home Tab**: Persistent dashboard view in Slack
-- **Auto-refresh**: Updates when you open the Home tab
-- **Multi-project support**: Automatically detects and follows the correct `<repo>-threads` repository
-- **Git-aware**: Works with Watercooler's branch-pairing model
+- **Local HTML UI** – quickly review threads without leaving your editor/terminal workflow
+- **Repository tabs** – switch between multiple Watercooler projects
+- **Sorting & filtering** – status/priority filters, free-text search, archived toggle
+- **Inline metadata editor** – adjust Status, Priority, Ball owner, Spec, and Topic, then copy the header snippet back to markdown
+- **Expandable entries** – preview entry headers and expand to read the full content
+- **Git-aware** – respects Watercooler’s branch-pairing model
 
 ## Architecture
 
@@ -33,9 +35,8 @@ The dashboard service:
 
 ### Prerequisites
 
-- Python 3.11+
-- A Slack workspace with permissions to install apps
-- Access to Watercooler threads repositories
+- Python 3.10+
+- Access to at least one Watercooler `*-threads` repository (local clone)
 
 ### Installation
 
@@ -50,42 +51,32 @@ The dashboard service:
    uv sync
    ```
 
-3. Create a Slack app using the manifest in `slack-manifest.yaml`
-
-4. Configure environment variables:
+3. Launch the local dashboard:
    ```bash
-   cp .env.example .env
-   # Edit .env with your Slack credentials
+   uv run python -m watercooler_dashboard.local_app
    ```
 
-5. Run the Slack app:
-   ```bash
-   uv run python -m watercooler_dashboard
-   ```
+4. Open your browser to [http://127.0.0.1:8080](http://127.0.0.1:8080)
 
-### Local Dashboard (Preview)
+### What you can do from the HTML dashboard
 
-For a quick local view outside of Slack, a lightweight web dashboard is available:
-
-```bash
-uv run python -m watercooler_dashboard.local_app
-```
-
-The server listens on `http://127.0.0.1:8080` by default. From there you can:
-
-- Point the dashboard at a local `*-threads` directory (saved per session).
-- Switch between repositories via tabs.
-- Reorder repositories and threads to build a personal priority list.
-- Jump directly to a thread's markdown file on disk.
+- Point the dashboard at a threads base directory (saved per session)
+- Switch between repositories via tabs
+- Reorder repositories and threads to match your priorities
+- Filter by status, priority, or search text
+- Toggle inclusion of archived threads
+- Expand a thread to review entries and copy header snippets after editing metadata
+- Copy the markdown path for a thread to jump into your editor
 
 ## Configuration
 
-Required environment variables:
+The local app stores preferences in `~/.config/watercooler-dashboard/config.json`:
 
-- `SLACK_BOT_TOKEN`: Bot User OAuth Token (starts with `xoxb-`)
-- `SLACK_APP_TOKEN`: App-Level Token for Socket Mode (starts with `xapp-`)
-- `SLACK_SIGNING_SECRET`: Signing secret from Slack app settings
-- `WATERCOOLER_THREADS_BASE`: Base directory for threads repositories (optional)
+- `threads_base` – the directory that contains your `*-threads` repos (auto-detected the first time)
+- `repo_order` – current tab order (updated when you reorder tabs)
+- `thread_order` – per-repo thread ordering
+
+Remove the file to reset the dashboard state. To run on a different host/port, invoke Uvicorn directly (e.g. `uv run uvicorn watercooler_dashboard.local_app:app --host 0.0.0.0 --port 9000`).
 
 ## Development
 
@@ -101,15 +92,11 @@ uv run black .
 uv run ruff check .
 ```
 
-## Deployment
+## Deployment / Slack Roadmap
 
-The dashboard can be deployed to:
-- Render
-- Fly.io
-- Heroku
-- Any platform supporting Python web apps
+The HTML server can be hosted anywhere FastAPI + Uvicorn run (Render, Fly.io, Heroku, etc.). Deployment scripts will land once we take it beyond local development.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
+Slack App Home support remains on the roadmap. The original Slack implementation (Block Kit rendering, Socket Mode, manifest) lives in this repo and will resurface once the HTML UX stabilizes; until then this README focuses on the HTML dashboard.
 
 ## Thread Resolution
 
