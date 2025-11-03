@@ -118,10 +118,9 @@ def load_config() -> DashboardConfig:
         return DashboardConfig()
 
     config = DashboardConfig()
-    threads_base = data.get("threads_base", config.threads_base)
-    resolved_base = Path(threads_base).expanduser().resolve()
-    if resolved_base.exists():
-        config.threads_base = str(resolved_base)
+    threads_base = data.get("threads_base")
+    if threads_base:
+        config.threads_base = str(Path(threads_base).expanduser().resolve())
     else:
         config.threads_base = default_threads_base()
     config.repo_order = list(data.get("repo_order", []))
