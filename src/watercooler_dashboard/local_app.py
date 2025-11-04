@@ -1009,11 +1009,13 @@ INDEX_HTML = """<!doctype html>
       function getStateFromURL() {
         const params = new URLSearchParams(window.location.search);
         const threadsParam = params.get('thread');
+        const entriesParam = params.get('entry');
         return {
           repo: params.get('repo') || null,
           status: params.get('status') || null,
           search: params.get('search') || null,
           threads: threadsParam ? new Set(threadsParam.split(',')) : new Set(),
+          entries: entriesParam ? new Set(entriesParam.split(',')) : new Set(),
         };
       }
 
@@ -1037,6 +1039,11 @@ INDEX_HTML = """<!doctype html>
       function syncThreadsToURL() {
         const threadsList = Array.from(state.openThreads).join(',');
         updateURL({ thread: threadsList || null });
+      }
+
+      function syncEntriesToURL() {
+        const entriesList = Array.from(state.openEntries).join(',');
+        updateURL({ entry: entriesList || null });
       }
 
       const elements = {
@@ -1065,6 +1072,7 @@ INDEX_HTML = """<!doctype html>
           showArchived: localStorage.getItem(STORAGE_KEYS.archived) === "true",
         },
         openThreads: urlState.threads || new Set(),
+        openEntries: urlState.entries || new Set(),
       };
 
       bindForm();
@@ -1871,9 +1879,20 @@ INDEX_HTML = """<!doctype html>
           return container;
         }
 
+        const threadTopic = thread.topic || "";
         entries.forEach((entry, index) => {
           const detail = document.createElement("details");
           detail.className = "entry";
+
+          // Create unique entry ID for persistence
+          const entryId = `${threadTopic}:${index}`;
+          detail.dataset.entryId = entryId;
+
+          // Restore open state from URL
+          if (state.openEntries.has(entryId)) {
+            detail.open = true;
+          }
+
           const summary = document.createElement("summary");
           summary.className = "entry-summary";
           const headerLine = document.createElement("span");
@@ -1900,6 +1919,16 @@ INDEX_HTML = """<!doctype html>
           const renderedContent = entry.body ? renderMarkdown(entry.body) : "(No entry body)";
           body.innerHTML = renderedContent;
           detail.append(body);
+
+          // Add toggle listener to persist entry state
+          detail.addEventListener("toggle", () => {
+            if (detail.open) {
+              state.openEntries.add(entryId);
+            } else {
+              state.openEntries.delete(entryId);
+            }
+            syncEntriesToURL();
+          });
 
           container.append(detail);
         });
