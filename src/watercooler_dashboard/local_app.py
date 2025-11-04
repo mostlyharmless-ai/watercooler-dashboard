@@ -1008,10 +1008,12 @@ INDEX_HTML = """<!doctype html>
       // URL-based state persistence
       function getStateFromURL() {
         const params = new URLSearchParams(window.location.search);
+        const threadsParam = params.get('thread');
         return {
           repo: params.get('repo') || null,
           status: params.get('status') || null,
           search: params.get('search') || null,
+          threads: threadsParam ? new Set(threadsParam.split(',')) : new Set(),
         };
       }
 
@@ -1030,6 +1032,11 @@ INDEX_HTML = """<!doctype html>
         // Update URL without page reload
         const newURL = `${window.location.pathname}?${params.toString()}`;
         window.history.replaceState({}, '', newURL);
+      }
+
+      function syncThreadsToURL() {
+        const threadsList = Array.from(state.openThreads).join(',');
+        updateURL({ thread: threadsList || null });
       }
 
       const elements = {
@@ -1057,7 +1064,7 @@ INDEX_HTML = """<!doctype html>
           search: urlState.search || localStorage.getItem(STORAGE_KEYS.search) || "",
           showArchived: localStorage.getItem(STORAGE_KEYS.archived) === "true",
         },
-        openThreads: new Set(),
+        openThreads: urlState.threads || new Set(),
       };
 
       bindForm();
@@ -1626,6 +1633,7 @@ INDEX_HTML = """<!doctype html>
             } else {
               state.openThreads.delete(identifier);
             }
+            syncThreadsToURL();
           });
         }
 
