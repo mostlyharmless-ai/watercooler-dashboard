@@ -305,7 +305,7 @@ INDEX_HTML = """<!doctype html>
         border-radius: 0.65rem;
         border: 1px solid var(--border);
         font-size: 0.95rem;
-        background: #fff;
+        background: var(--surface);
         color: var(--text);
       }
       .input-row input::placeholder {
@@ -456,7 +456,7 @@ INDEX_HTML = """<!doctype html>
         border: 1px solid var(--border);
         padding: 0.45rem 0.7rem;
         font-size: 0.92rem;
-        background: #fff;
+        background: var(--surface);
         min-width: 160px;
         color: var(--text);
       }
@@ -655,7 +655,7 @@ INDEX_HTML = """<!doctype html>
       .field-row select {
         border-radius: 0.55rem;
         border: 1px solid var(--border);
-        background: rgba(255, 255, 255, 0.9);
+        background: var(--surface);
         padding: 0.45rem 0.6rem;
         font-size: 0.9rem;
         color: var(--text);
