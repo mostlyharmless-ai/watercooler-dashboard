@@ -623,7 +623,7 @@ INDEX_HTML = """<!doctype html>
         gap: 1.15rem;
       }
       .editor {
-        background: rgba(255, 255, 255, 0.92);
+        background: var(--surface);
         border-radius: 0.8rem;
         border: 1px dashed rgba(37, 99, 235, 0.35);
         padding: 1rem 1.15rem;
@@ -763,7 +763,6 @@ INDEX_HTML = """<!doctype html>
         padding: 0 0.85rem 0.95rem;
         font-size: 0.9rem;
         line-height: 1.5;
-        white-space: pre-wrap;
         color: var(--text);
       }
       /* Markdown content styling */
