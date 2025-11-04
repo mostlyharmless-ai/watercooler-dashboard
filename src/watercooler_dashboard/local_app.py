@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import secrets
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, AsyncGenerator, Dict, List, Set
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from watercooler_dashboard.config import load_config, save_config
 from watercooler_dashboard.thread_parser import ThreadParser
 from watercooler_dashboard.git_helper import GitHelper, get_repo_root
+from watercooler_dashboard.auto_refresh import ThreadsPoller, RefreshCoordinator
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Watercooler Dashboard (Local)")
 
 # Cache GitHelper instances per repository
 _git_helpers: Dict[str, GitHelper] = {}
+
+# Auto-refresh service instances
+_pollers: List[ThreadsPoller] = []
+_coordinator: RefreshCoordinator = RefreshCoordinator.get_instance()
 
 PRIORITY_LEVELS = ("P0", "P1", "P2", "P3", "P4", "P5")
 CSRF_HEADER = "X-Watercooler-CSRF"
@@ -1717,6 +1727,99 @@ async def update_thread_metadata(payload: Dict[str, Any], request: Request) -> J
         "thread": serialized,
         "git": git_status
     })
+
+
+@app.get("/api/events")
+async def events_stream(request: Request) -> StreamingResponse:
+    """Server-Sent Events stream for real-time updates.
+
+    Clients connect to this endpoint to receive push notifications
+    when threads repositories are updated.
+    """
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Generate SSE-formatted events."""
+        try:
+            async for event in _coordinator.subscribe():
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                # Format as SSE
+                yield f"data: {json.dumps(event)}\n\n"
+
+        except asyncio.CancelledError:
+            logger.info("SSE client disconnected")
+            raise
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+@app.get("/api/health")
+async def health_check() -> JSONResponse:
+    """Health check endpoint with poller status."""
+
+    poller_stats = [poller.get_stats() for poller in _pollers]
+    coordinator_stats = _coordinator.get_stats()
+
+    return JSONResponse({
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "pollers": poller_stats,
+        "coordinator": coordinator_stats,
+    })
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background polling services on startup."""
+    config = load_config()
+    threads_base = Path(config.threads_base).expanduser().resolve()
+
+    if not threads_base.exists():
+        logger.warning(f"Threads base does not exist: {threads_base}")
+        return
+
+    # Find all *-threads repositories
+    for item in threads_base.iterdir():
+        if item.is_dir() and item.name.endswith("-threads"):
+            try:
+                # Create and start a poller for this repo
+                poller = ThreadsPoller(
+                    repo_path=item,
+                    interval=20,  # Poll every 20 seconds
+                    coordinator=_coordinator,
+                )
+                await poller.start()
+                _pollers.append(poller)
+                logger.info(f"Started poller for {item}")
+            except Exception as e:
+                logger.error(f"Failed to start poller for {item}: {e}")
+
+    logger.info(f"Auto-refresh initialized with {len(_pollers)} poller(s)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up polling services on shutdown."""
+    logger.info(f"Stopping {len(_pollers)} poller(s)...")
+
+    for poller in _pollers:
+        try:
+            await poller.stop()
+        except Exception as e:
+            logger.error(f"Error stopping poller {poller.repo_path}: {e}")
+
+    _pollers.clear()
+    logger.info("Auto-refresh shutdown complete")
 
 
 def run() -> None:
