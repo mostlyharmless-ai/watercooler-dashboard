@@ -51,6 +51,7 @@ data/
 cache/
 *.db
 *.sqlite
+.serena/
 
 # Watercooler
 .watercooler/
