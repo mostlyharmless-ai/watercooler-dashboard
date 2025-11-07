@@ -229,9 +229,9 @@ class ThreadParser:
                     order.append(normalized_key)
 
         header_text = self._render_header(title, metadata, order)
-        new_content = header_text
+        new_content = header_text + "\n\n---"
         if body_text:
-            new_content += "\n\n" + body_text.strip() + "\n"
+            new_content += "\n" + body_text.strip() + "\n"
         else:
             new_content += "\n"
 

@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import secrets
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, AsyncGenerator, Dict, List, Set
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from watercooler_dashboard.config import load_config, save_config
 from watercooler_dashboard.thread_parser import ThreadParser
 from watercooler_dashboard.git_helper import GitHelper, get_repo_root
+from watercooler_dashboard.auto_refresh import ThreadsPoller, RefreshCoordinator
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Watercooler Dashboard (Local)")
 
 # Cache GitHelper instances per repository
 _git_helpers: Dict[str, GitHelper] = {}
+
+# Auto-refresh service instances
+_pollers: List[ThreadsPoller] = []
+_coordinator: RefreshCoordinator = RefreshCoordinator.get_instance()
 
 PRIORITY_LEVELS = ("P0", "P1", "P2", "P3", "P4", "P5")
 CSRF_HEADER = "X-Watercooler-CSRF"
@@ -234,6 +244,24 @@ INDEX_HTML = """<!doctype html>
         --danger: #b91c1c;
         background: linear-gradient(180deg, #f8fafc 0%, #eff3f9 100%);
       }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --surface: #1e1e1e;
+          --surface-alt: #2d2d2d;
+          --border: #3a3a3a;
+          --border-strong: #4a4a4a;
+          --accent: #60a5fa;
+          --accent-soft: rgba(96, 165, 250, 0.18);
+          --text: #e5e7eb;
+          --text-muted: #9ca3af;
+          --success: #10b981;
+          --danger: #ef4444;
+          background: linear-gradient(180deg, #111111 0%, #1a1a1a 100%);
+        }
+      }
+
       body {
         margin: 0;
         color: var(--text);
@@ -277,7 +305,7 @@ INDEX_HTML = """<!doctype html>
         border-radius: 0.65rem;
         border: 1px solid var(--border);
         font-size: 0.95rem;
-        background: #fff;
+        background: var(--surface);
         color: var(--text);
       }
       .input-row input::placeholder {
@@ -428,7 +456,7 @@ INDEX_HTML = """<!doctype html>
         border: 1px solid var(--border);
         padding: 0.45rem 0.7rem;
         font-size: 0.92rem;
-        background: #fff;
+        background: var(--surface);
         min-width: 160px;
         color: var(--text);
       }
@@ -441,6 +469,57 @@ INDEX_HTML = """<!doctype html>
       .toolbar-note {
         color: var(--text-muted);
         font-size: 0.85rem;
+        flex-basis: 100%;
+      }
+      .connection-indicator {
+        flex-basis: 100%;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.82rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        padding: 0.35rem 0.6rem;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.04);
+        transition: color 0.18s ease, background 0.18s ease;
+      }
+      .connection-indicator::before {
+        content: "";
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: var(--border);
+        box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.08);
+        transition: background 0.18s ease, box-shadow 0.18s ease;
+      }
+      .connection-indicator[data-state="connected"] {
+        color: #047857;
+        background: rgba(5, 150, 105, 0.12);
+      }
+      .connection-indicator[data-state="connected"]::before {
+        background: #22c55e;
+        box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
+      }
+      .connection-indicator[data-state="reconnecting"],
+      .connection-indicator[data-state="connecting"] {
+        color: #ea580c;
+        background: rgba(234, 88, 12, 0.12);
+      }
+      .connection-indicator[data-state="reconnecting"]::before,
+      .connection-indicator[data-state="connecting"]::before {
+        background: #f97316;
+        box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.2);
+      }
+      .connection-indicator[data-state="offline"],
+      .connection-indicator[data-state="unsupported"] {
+        color: #b91c1c;
+        background: rgba(185, 28, 28, 0.12);
+      }
+      .connection-indicator[data-state="offline"]::before,
+      .connection-indicator[data-state="unsupported"]::before {
+        background: #ef4444;
+        box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
       }
       .thread-list {
         display: grid;
@@ -544,7 +623,7 @@ INDEX_HTML = """<!doctype html>
         gap: 1.15rem;
       }
       .editor {
-        background: rgba(255, 255, 255, 0.92);
+        background: var(--surface);
         border-radius: 0.8rem;
         border: 1px dashed rgba(37, 99, 235, 0.35);
         padding: 1rem 1.15rem;
@@ -576,7 +655,7 @@ INDEX_HTML = """<!doctype html>
       .field-row select {
         border-radius: 0.55rem;
         border: 1px solid var(--border);
-        background: rgba(255, 255, 255, 0.9);
+        background: var(--surface);
         padding: 0.45rem 0.6rem;
         font-size: 0.9rem;
         color: var(--text);
@@ -626,6 +705,27 @@ INDEX_HTML = """<!doctype html>
         font-size: 0.82rem;
         color: var(--success);
       }
+      #updateToast {
+        position: fixed;
+        bottom: 2.2rem;
+        right: 2.2rem;
+        padding: 0.75rem 1rem;
+        border-radius: 0.9rem;
+        background: var(--accent);
+        color: #fff;
+        font-size: 0.9rem;
+        font-weight: 600;
+        box-shadow: 0 14px 32px rgba(37, 99, 235, 0.35);
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 1000;
+      }
+      #updateToast.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
       .entries {
         display: grid;
         gap: 0.85rem;
@@ -663,8 +763,84 @@ INDEX_HTML = """<!doctype html>
         padding: 0 0.85rem 0.95rem;
         font-size: 0.9rem;
         line-height: 1.5;
-        white-space: pre-wrap;
         color: var(--text);
+      }
+      /* Markdown content styling */
+      .entry-body h1, .entry-body h2, .entry-body h3,
+      .entry-body h4, .entry-body h5, .entry-body h6 {
+        margin: 1.2em 0 0.6em;
+        font-weight: 600;
+        line-height: 1.3;
+        color: var(--text);
+      }
+      .entry-body h1:first-child, .entry-body h2:first-child,
+      .entry-body h3:first-child { margin-top: 0; }
+      .entry-body h1 { font-size: 1.6em; }
+      .entry-body h2 { font-size: 1.4em; }
+      .entry-body h3 { font-size: 1.2em; }
+      .entry-body h4 { font-size: 1.1em; }
+      .entry-body p { margin: 0.8em 0; }
+      .entry-body ul, .entry-body ol {
+        margin: 0.8em 0;
+        padding-left: 2em;
+      }
+      .entry-body li { margin: 0.4em 0; }
+      .entry-body code {
+        background: var(--surface-alt);
+        padding: 0.15em 0.4em;
+        border-radius: 0.3em;
+        font-size: 0.9em;
+        font-family: "Monaco", "Consolas", "Courier New", monospace;
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .entry-body pre {
+        background: var(--surface-alt);
+        padding: 1em;
+        border-radius: 0.6em;
+        overflow-x: auto;
+        margin: 1em 0;
+        border: 1px solid var(--border);
+      }
+      .entry-body pre code {
+        background: transparent;
+        padding: 0;
+        border: none;
+        font-size: 0.85em;
+        line-height: 1.5;
+      }
+      .entry-body blockquote {
+        margin: 1em 0;
+        padding-left: 1em;
+        border-left: 3px solid var(--accent);
+        color: var(--text-muted);
+        font-style: italic;
+      }
+      .entry-body a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .entry-body a:hover {
+        text-decoration: underline;
+      }
+      .entry-body hr {
+        border: none;
+        border-top: 1px solid var(--border);
+        margin: 1.5em 0;
+      }
+      .entry-body table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 1em 0;
+      }
+      .entry-body th, .entry-body td {
+        border: 1px solid var(--border);
+        padding: 0.6em 0.8em;
+        text-align: left;
+      }
+      .entry-body th {
+        background: var(--surface-alt);
+        font-weight: 600;
       }
       .empty-state {
         padding: 2rem;
@@ -698,6 +874,12 @@ INDEX_HTML = """<!doctype html>
         }
       }
     </style>
+    <!-- Markdown rendering and syntax highlighting -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
   </head>
   <body>
     <header class="app-header">
@@ -741,10 +923,12 @@ INDEX_HTML = """<!doctype html>
             Show archived threads
           </label>
           <span class="toolbar-note">Default sort: open → highest priority → most recent.</span>
+          <span id="liveIndicator" class="connection-indicator" aria-live="polite" data-state="connecting">Connecting…</span>
         </div>
         <section id="threadsContainer" class="thread-list" aria-live="polite"></section>
       </section>
     </main>
+    <div id="updateToast" role="status" aria-live="polite"></div>
 <script type="module">
       const CSRF_TOKEN = document.querySelector('meta[name="watercooler-csrf"]')?.content || "";
       const withCsrf = (headers = {}) =>
@@ -771,6 +955,97 @@ INDEX_HTML = """<!doctype html>
         search: STORAGE_PREFIX + "-search",
         archived: STORAGE_PREFIX + "-show-archived",
       };
+      const SSE_CONFIG = {
+        reconnectDelay: 5000,
+        maxDelay: 60000,
+        fallbackInterval: 60000,
+      };
+      const sseState = {
+        source: null,
+        reconnectDelay: SSE_CONFIG.reconnectDelay,
+        reconnectTimer: null,
+        fallbackTimer: null,
+        toastTimer: null,
+      };
+      let refreshInFlight = null;
+
+      // Configure marked.js for markdown rendering with syntax highlighting
+      if (typeof marked !== 'undefined') {
+        marked.setOptions({
+          highlight: function(code, lang) {
+            if (lang && hljs.getLanguage(lang)) {
+              try {
+                return hljs.highlight(code, { language: lang }).value;
+              } catch (e) {
+                console.warn('Highlight.js error:', e);
+              }
+            }
+            try {
+              return hljs.highlightAuto(code).value;
+            } catch (e) {
+              return code;
+            }
+          },
+          breaks: true,
+          gfm: true,
+        });
+      }
+
+      // Helper function to render markdown with sanitization
+      function renderMarkdown(text) {
+        if (!text || typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+          return text || '';
+        }
+        try {
+          const rawHTML = marked.parse(text);
+          return DOMPurify.sanitize(rawHTML);
+        } catch (e) {
+          console.warn('Markdown rendering error:', e);
+          return text;
+        }
+      }
+
+      // URL-based state persistence
+      function getStateFromURL() {
+        const params = new URLSearchParams(window.location.search);
+        const threadsParam = params.get('thread');
+        const entriesParam = params.get('entry');
+        return {
+          repo: params.get('repo') || null,
+          status: params.get('status') || null,
+          search: params.get('search') || null,
+          threads: threadsParam ? new Set(threadsParam.split(',')) : new Set(),
+          entries: entriesParam ? new Set(entriesParam.split(',')) : new Set(),
+        };
+      }
+
+      function updateURL(updates) {
+        const params = new URLSearchParams(window.location.search);
+
+        // Apply updates
+        Object.entries(updates).forEach(([key, value]) => {
+          if (value) {
+            params.set(key, value);
+          } else {
+            params.delete(key);
+          }
+        });
+
+        // Update URL without page reload
+        const newURL = `${window.location.pathname}?${params.toString()}`;
+        window.history.replaceState({}, '', newURL);
+      }
+
+      function syncThreadsToURL() {
+        const threadsList = Array.from(state.openThreads).join(',');
+        updateURL({ thread: threadsList || null });
+      }
+
+      function syncEntriesToURL() {
+        const entriesList = Array.from(state.openEntries).join(',');
+        updateURL({ entry: entriesList || null });
+      }
+
       const elements = {
         repos: document.getElementById("reposContainer"),
         threads: document.getElementById("threadsContainer"),
@@ -782,25 +1057,35 @@ INDEX_HTML = """<!doctype html>
         form: document.getElementById("threadsBaseForm"),
         threadsBaseInput: document.getElementById("threadsBaseInput"),
         statusBanner: document.getElementById("configStatus"),
+        liveIndicator: document.getElementById("liveIndicator"),
+        updateToast: document.getElementById("updateToast"),
       };
+      // Initialize state from URL parameters (preferred) or localStorage (fallback)
+      const urlState = getStateFromURL();
       const state = {
         repos: [],
-        activeRepo: null,
+        activeRepo: urlState.repo || null,
         filters: {
-          status: localStorage.getItem(STORAGE_KEYS.status) || "all",
+          status: urlState.status || localStorage.getItem(STORAGE_KEYS.status) || "all",
           sort: localStorage.getItem(STORAGE_KEYS.sort) || "default",
-          search: localStorage.getItem(STORAGE_KEYS.search) || "",
+          search: urlState.search || localStorage.getItem(STORAGE_KEYS.search) || "",
           showArchived: localStorage.getItem(STORAGE_KEYS.archived) === "true",
         },
+        openThreads: urlState.threads || new Set(),
+        openEntries: urlState.entries || new Set(),
       };
 
       bindForm();
       populateToolbar();
       bindToolbar();
-      fetchData().catch((error) => {
+      refreshData("initial").catch((error) => {
         renderStatus(error.message, "error");
-        elements.threads.innerHTML = '<p class="empty-state">' + error.message + "</p>";
+        if (elements.threads) {
+          elements.threads.innerHTML = '<p class="empty-state">' + error.message + "</p>";
+        }
       });
+      startFallbackPolling();
+      initEventStream();
 
       async function fetchData() {
         const response = await fetch("/api/data", { cache: "no-store" });
@@ -823,6 +1108,170 @@ INDEX_HTML = """<!doctype html>
         renderStatus(data.error || "", data.error ? "error" : "info");
         renderRepos();
         renderThreads();
+      }
+
+      async function refreshData(reason = "manual") {
+        if (refreshInFlight) {
+          return refreshInFlight;
+        }
+
+        const threadsEl = elements.threads;
+        const scrollTop = threadsEl ? threadsEl.scrollTop : 0;
+
+        refreshInFlight = (async () => {
+          await fetchData();
+          if (threadsEl) {
+            threadsEl.scrollTop = scrollTop;
+          }
+        })();
+
+        try {
+          await refreshInFlight;
+        } catch (error) {
+          if (reason !== "initial") {
+            console.error("Refresh failed:", error);
+          }
+          throw error;
+        } finally {
+          refreshInFlight = null;
+        }
+      }
+
+      function startFallbackPolling() {
+        if (sseState.fallbackTimer) {
+          clearInterval(sseState.fallbackTimer);
+        }
+        sseState.fallbackTimer = setInterval(() => {
+          refreshData("interval").catch(() => {
+            // Suppress errors during background polling; status banner covers explicit failures.
+          });
+        }, SSE_CONFIG.fallbackInterval);
+      }
+
+      function initEventStream() {
+        if (!window.EventSource) {
+          setConnectionState("unsupported", "Live updates unavailable (EventSource unsupported)");
+          return;
+        }
+        connectEventStream();
+      }
+
+      function connectEventStream() {
+        teardownEventSource();
+        clearTimeout(sseState.reconnectTimer);
+        sseState.reconnectTimer = null;
+        setConnectionState("connecting");
+
+        const source = new EventSource("/api/events");
+        sseState.source = source;
+
+        source.addEventListener("open", () => {
+          sseState.reconnectDelay = SSE_CONFIG.reconnectDelay;
+          setConnectionState("connected");
+        });
+
+        source.addEventListener("message", (event) => {
+          if (!event.data) return;
+          try {
+            const payload = JSON.parse(event.data);
+            handleEventMessage(payload);
+          } catch (error) {
+            console.error("Invalid event payload", error);
+          }
+        });
+
+        source.addEventListener("error", () => {
+          scheduleReconnect();
+        });
+      }
+
+      function teardownEventSource() {
+        if (sseState.source) {
+          sseState.source.close();
+          sseState.source = null;
+        }
+      }
+
+      function scheduleReconnect() {
+        setConnectionState(
+          sseState.reconnectDelay >= SSE_CONFIG.maxDelay ? "offline" : "reconnecting"
+        );
+
+        teardownEventSource();
+
+        if (sseState.reconnectTimer) {
+          clearTimeout(sseState.reconnectTimer);
+        }
+
+        const delay = sseState.reconnectDelay;
+        sseState.reconnectTimer = setTimeout(() => {
+          sseState.reconnectTimer = null;
+          connectEventStream();
+        }, delay);
+
+        sseState.reconnectDelay = Math.min(
+          Math.round(sseState.reconnectDelay * 1.8),
+          SSE_CONFIG.maxDelay
+        );
+      }
+
+      function handleEventMessage(payload) {
+        if (!payload || typeof payload.type !== "string") {
+          return;
+        }
+
+        if (payload.type === "threads:updated") {
+          refreshData("push")
+            .then(() => {
+              const timeText = formatUpdateTime(payload.timestamp);
+              showToast(`Threads updated ${timeText}`);
+            })
+            .catch(() => {
+              // Errors already surfaced via banner/log.
+            });
+        } else if (payload.type === "heartbeat") {
+          setConnectionState("connected");
+        }
+      }
+
+      function setConnectionState(state, overrideText) {
+        const indicator = elements.liveIndicator;
+        if (!indicator) return;
+        indicator.dataset.state = state;
+        const defaultText = {
+          connected: "Live updates on",
+          connecting: "Connecting…",
+          reconnecting: "Reconnecting…",
+          offline: "Offline – retrying soon",
+          unsupported: "Live updates unavailable",
+        };
+        indicator.textContent = overrideText || defaultText[state] || "Status unknown";
+      }
+
+      function showToast(message) {
+        const toast = elements.updateToast;
+        if (!toast) return;
+        toast.textContent = message;
+        toast.classList.add("visible");
+        if (sseState.toastTimer) {
+          clearTimeout(sseState.toastTimer);
+        }
+        sseState.toastTimer = setTimeout(() => {
+          toast.classList.remove("visible");
+        }, 2600);
+      }
+
+      function formatUpdateTime(value) {
+        try {
+          const date = value ? new Date(value) : new Date();
+          if (Number.isNaN(date.getTime())) {
+            return "just now";
+          }
+          return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        } catch (error) {
+          console.warn("Unable to format update timestamp", error);
+          return "just now";
+        }
       }
 
       function populateToolbar() {
@@ -851,6 +1300,7 @@ INDEX_HTML = """<!doctype html>
           elements.statusSelect.addEventListener("change", (event) => {
             state.filters.status = event.target.value;
             localStorage.setItem(STORAGE_KEYS.status, state.filters.status);
+            updateURL({ status: state.filters.status !== 'all' ? state.filters.status : null });
             renderThreads();
           });
         }
@@ -865,6 +1315,7 @@ INDEX_HTML = """<!doctype html>
           const debounced = debounce((event) => {
             state.filters.search = event.target.value.trim().toLowerCase();
             localStorage.setItem(STORAGE_KEYS.search, state.filters.search);
+            updateURL({ search: state.filters.search || null });
             renderThreads();
           }, 180);
           elements.searchInput.addEventListener("input", debounced);
@@ -893,7 +1344,7 @@ INDEX_HTML = """<!doctype html>
 
           if (response.ok) {
             flashStatus("Threads directory updated");
-            await fetchData();
+            await refreshData("manual");
           } else {
             const data = await response.json().catch(() => ({}));
             renderStatus(data.detail || "Failed to update threads directory", "error");
@@ -970,6 +1421,7 @@ INDEX_HTML = """<!doctype html>
 
           card.addEventListener("click", () => {
             state.activeRepo = repo.name;
+            updateURL({ repo: repo.name });
             renderRepos();
             renderThreads();
           });
@@ -1059,8 +1511,23 @@ INDEX_HTML = """<!doctype html>
         return state.repos.find((repo) => repo.name === state.activeRepo) || null;
       }
 
+      function getThreadKey(thread, index) {
+        if (!thread) return String(index);
+        const candidate = thread.topic || thread.title || thread.filePath;
+        return candidate ? String(candidate) : String(index);
+      }
+
       function renderThreads() {
         if (!elements.threads) return;
+        const currentlyOpen = new Set(
+          Array.from(elements.threads.querySelectorAll("details[open][data-topic]")).map(
+            (detail) => detail.dataset.topic || ""
+          )
+        );
+        currentlyOpen.forEach((topic) => {
+          if (topic) state.openThreads.add(topic);
+        });
+
         elements.threads.innerHTML = "";
         const repo = getActiveRepo();
 
@@ -1069,6 +1536,7 @@ INDEX_HTML = """<!doctype html>
           empty.className = "empty-state";
           empty.textContent = "Select a repository to view its threads.";
           elements.threads.append(empty);
+          state.openThreads = new Set();
           return;
         }
 
@@ -1078,19 +1546,37 @@ INDEX_HTML = """<!doctype html>
           empty.className = "empty-state";
           empty.textContent = "No threads match the current filters.";
           elements.threads.append(empty);
+          state.openThreads = new Set();
           return;
         }
 
+        const nextOpen = new Set();
+
         filtered.forEach((thread, index) => {
-          elements.threads.append(buildThreadCard(thread, index, repo));
+          const key = getThreadKey(thread, index);
+          const shouldOpen = key ? state.openThreads.has(key) : false;
+          const card = buildThreadCard(thread, index, repo, shouldOpen, key);
+          if (card.open && key) {
+            nextOpen.add(key);
+          }
+          elements.threads.append(card);
         });
+
+        state.openThreads = nextOpen;
       }
 
-      function buildThreadCard(thread, index, repo) {
+      function buildThreadCard(thread, index, repo, shouldOpen = false, threadKey = null) {
         const details = document.createElement("details");
         details.className = "thread-card";
         details.dataset.status = thread.statusNormalized || "";
         details.dataset.priority = thread.priority || "";
+        const identifier = threadKey || getThreadKey(thread, index);
+        if (identifier) {
+          details.dataset.topic = identifier;
+        }
+        if (shouldOpen && identifier) {
+          details.open = true;
+        }
         const summary = document.createElement("summary");
         summary.className = "thread-summary";
 
@@ -1147,6 +1633,17 @@ INDEX_HTML = """<!doctype html>
         body.append(buildEditor(thread));
         body.append(buildEntryList(thread));
         details.append(body);
+
+        if (identifier) {
+          details.addEventListener("toggle", () => {
+            if (details.open) {
+              state.openThreads.add(identifier);
+            } else {
+              state.openThreads.delete(identifier);
+            }
+            syncThreadsToURL();
+          });
+        }
 
         return details;
       }
@@ -1340,7 +1837,7 @@ INDEX_HTML = """<!doctype html>
             baseMeta.Spec = response.spec || "";
             baseMeta.Topic = (response.metadata && response.metadata.Topic) || response.topic || "";
             working = { ...baseMeta };
-            await fetchData();
+            await refreshData("manual");
           } catch (error) {
             showEditorMessage(error.message || "Save failed", true);
             saveBtn.disabled = false;
@@ -1382,9 +1879,20 @@ INDEX_HTML = """<!doctype html>
           return container;
         }
 
+        const threadTopic = thread.topic || "";
         entries.forEach((entry, index) => {
           const detail = document.createElement("details");
           detail.className = "entry";
+
+          // Create unique entry ID for persistence
+          const entryId = `${threadTopic}:${index}`;
+          detail.dataset.entryId = entryId;
+
+          // Restore open state from URL
+          if (state.openEntries.has(entryId)) {
+            detail.open = true;
+          }
+
           const summary = document.createElement("summary");
           summary.className = "entry-summary";
           const headerLine = document.createElement("span");
@@ -1408,8 +1916,19 @@ INDEX_HTML = """<!doctype html>
 
           const body = document.createElement("div");
           body.className = "entry-body";
-          body.textContent = entry.body || "(No entry body)";
+          const renderedContent = entry.body ? renderMarkdown(entry.body) : "(No entry body)";
+          body.innerHTML = renderedContent;
           detail.append(body);
+
+          // Add toggle listener to persist entry state
+          detail.addEventListener("toggle", () => {
+            if (detail.open) {
+              state.openEntries.add(entryId);
+            } else {
+              state.openEntries.delete(entryId);
+            }
+            syncEntriesToURL();
+          });
 
           container.append(detail);
         });
@@ -1717,6 +2236,99 @@ async def update_thread_metadata(payload: Dict[str, Any], request: Request) -> J
         "thread": serialized,
         "git": git_status
     })
+
+
+@app.get("/api/events")
+async def events_stream(request: Request) -> StreamingResponse:
+    """Server-Sent Events stream for real-time updates.
+
+    Clients connect to this endpoint to receive push notifications
+    when threads repositories are updated.
+    """
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Generate SSE-formatted events."""
+        try:
+            async for event in _coordinator.subscribe():
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                # Format as SSE
+                yield f"data: {json.dumps(event)}\n\n"
+
+        except asyncio.CancelledError:
+            logger.info("SSE client disconnected")
+            raise
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+@app.get("/api/health")
+async def health_check() -> JSONResponse:
+    """Health check endpoint with poller status."""
+
+    poller_stats = [poller.get_stats() for poller in _pollers]
+    coordinator_stats = _coordinator.get_stats()
+
+    return JSONResponse({
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "pollers": poller_stats,
+        "coordinator": coordinator_stats,
+    })
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background polling services on startup."""
+    config = load_config()
+    threads_base = Path(config.threads_base).expanduser().resolve()
+
+    if not threads_base.exists():
+        logger.warning(f"Threads base does not exist: {threads_base}")
+        return
+
+    # Find all *-threads repositories
+    for item in threads_base.iterdir():
+        if item.is_dir() and item.name.endswith("-threads"):
+            try:
+                # Create and start a poller for this repo
+                poller = ThreadsPoller(
+                    repo_path=item,
+                    interval=20,  # Poll every 20 seconds
+                    coordinator=_coordinator,
+                )
+                await poller.start()
+                _pollers.append(poller)
+                logger.info(f"Started poller for {item}")
+            except Exception as e:
+                logger.error(f"Failed to start poller for {item}: {e}")
+
+    logger.info(f"Auto-refresh initialized with {len(_pollers)} poller(s)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up polling services on shutdown."""
+    logger.info(f"Stopping {len(_pollers)} poller(s)...")
+
+    for poller in _pollers:
+        try:
+            await poller.stop()
+        except Exception as e:
+            logger.error(f"Error stopping poller {poller.repo_path}: {e}")
+
+    _pollers.clear()
+    logger.info("Auto-refresh shutdown complete")
 
 
 def run() -> None:
