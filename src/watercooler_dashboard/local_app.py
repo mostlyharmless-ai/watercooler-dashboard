@@ -732,8 +732,9 @@ INDEX_HTML = """<!doctype html>
       }
       .entries h3 {
         margin: 0;
-        font-size: 0.95rem;
-        color: var(--text-muted);
+        font-size: 1.08rem;
+        font-weight: 650;
+        color: var(--text);
       }
       details.entry {
         border: 1px solid rgba(15, 23, 42, 0.08);
@@ -741,23 +742,26 @@ INDEX_HTML = """<!doctype html>
         background: var(--surface);
       }
       summary.entry-summary {
-        padding: 0.7rem 0.85rem;
+        padding: 0.75rem 0.9rem;
         display: flex;
         flex-direction: column;
-        gap: 0.4rem;
+        gap: 0.5rem;
         cursor: pointer;
-        font-size: 0.9rem;
+        font-size: 1rem;
+        font-weight: 560;
       }
       summary.entry-summary::-webkit-details-marker { display: none; }
       .entry-meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 0.4rem 0.7rem;
+        gap: 0.45rem 0.9rem;
         color: var(--text-muted);
-        font-size: 0.82rem;
+        font-size: 0.88rem;
+        letter-spacing: 0.01em;
       }
       .entry-line {
-        font-weight: 600;
+        font-weight: 680;
+        color: var(--text);
       }
       .entry-body {
         padding: 0 0.85rem 0.95rem;
