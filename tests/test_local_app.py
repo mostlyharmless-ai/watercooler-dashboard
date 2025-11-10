@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -118,3 +119,78 @@ Ready to go.
     body = response.json()
     assert body["status"] == "ok"
     assert body["thread"]["priority"] == "P0"
+
+
+def test_health_response_reports_ok_for_recent_pollers():
+    now = datetime.now()
+    payload = local_app._build_health_response(
+        [
+            {
+                "repo_path": "/tmp/alpha-threads",
+                "running": True,
+                "interval": 20,
+                "last_commit": "abc123",
+                "last_fetch": now.isoformat(),
+                "fetch_count": 2,
+                "error_count": 0,
+                "last_error": None,
+            }
+        ],
+        {"subscribers": 1, "last_refresh": now.isoformat(), "refresh_count": 1},
+    )
+
+    assert payload["status"] == "OK"
+    assert payload["reasons"] == []
+    assert payload["pollers"][0]["status"] == "OK"
+
+
+def test_health_response_degraded_for_stale_fetch():
+    now = datetime.now()
+    stale_time = (now - timedelta(seconds=120)).isoformat()
+
+    payload = local_app._build_health_response(
+        [
+            {
+                "repo_path": "/tmp/beta-threads",
+                "running": True,
+                "interval": 20,
+                "last_commit": "def456",
+                "last_fetch": stale_time,
+                "fetch_count": 5,
+                "error_count": 0,
+                "last_error": None,
+            }
+        ],
+        {"subscribers": 0, "last_refresh": None, "refresh_count": 0},
+    )
+
+    assert payload["status"] == "DEGRADED"
+    assert any("beta-threads" in reason for reason in payload["reasons"])
+    poller = payload["pollers"][0]
+    assert poller["status"] == "DEGRADED"
+    assert any("Last fetch becoming stale" in issue for issue in poller["issues"])
+
+
+def test_health_response_error_when_poller_stopped():
+    now = datetime.now()
+    payload = local_app._build_health_response(
+        [
+            {
+                "repo_path": "/tmp/gamma-threads",
+                "running": False,
+                "interval": 20,
+                "last_commit": "ghi789",
+                "last_fetch": (now - timedelta(seconds=10)).isoformat(),
+                "fetch_count": 1,
+                "error_count": 4,
+                "last_error": "Git timeout",
+            }
+        ],
+        {"subscribers": 2, "last_refresh": now.isoformat(), "refresh_count": 5},
+    )
+
+    assert payload["status"] == "ERROR"
+    poller = payload["pollers"][0]
+    assert poller["status"] == "ERROR"
+    assert any("Poller not running" in issue for issue in poller["issues"])
+    assert any("Repeated errors" in issue for issue in poller["issues"])

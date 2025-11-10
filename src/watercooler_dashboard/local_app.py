@@ -35,6 +35,131 @@ CSRF_HEADER = "X-Watercooler-CSRF"
 CSRF_TOKEN = secrets.token_urlsafe(32)
 ALLOWED_HOSTS = {"127.0.0.1:8080", "localhost:8080", "testserver"}
 
+HEALTH_STATUS_ORDER = {"OK": 0, "DEGRADED": 1, "ERROR": 2}
+FETCH_WARN_THRESHOLD_SECONDS = 60
+FETCH_ERROR_THRESHOLD_SECONDS = 300
+ERROR_COUNT_WARN_THRESHOLD = 1
+ERROR_COUNT_ERROR_THRESHOLD = 3
+
+
+def _worse_status(current: str, candidate: str) -> str:
+    """Return the more severe of two health statuses."""
+
+    if HEALTH_STATUS_ORDER[candidate] > HEALTH_STATUS_ORDER[current]:
+        return candidate
+    return current
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    """Convert an ISO formatted timestamp string to a datetime object."""
+
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _analyze_poller_health(stats: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    """Annotate poller stats with health status and issues."""
+
+    status = "OK"
+    issues: list[str] = []
+
+    repo_path = stats.get("repo_path", "unknown")
+    running = bool(stats.get("running"))
+    error_count = int(stats.get("error_count", 0) or 0)
+    fetch_count = int(stats.get("fetch_count", 0) or 0)
+    last_error = stats.get("last_error")
+
+    last_fetch_raw = stats.get("last_fetch")
+    last_fetch_dt = _parse_iso_timestamp(last_fetch_raw)
+    age_seconds: float | None = None
+
+    if last_fetch_dt:
+        age_seconds = max((now - last_fetch_dt).total_seconds(), 0)
+
+        if age_seconds > FETCH_ERROR_THRESHOLD_SECONDS:
+            issues.append(f"Last fetch stale ({int(age_seconds)}s ago)")
+            status = _worse_status(status, "ERROR")
+        elif age_seconds > FETCH_WARN_THRESHOLD_SECONDS:
+            issues.append(f"Last fetch becoming stale ({int(age_seconds)}s ago)")
+            status = _worse_status(status, "DEGRADED")
+    else:
+        if fetch_count == 0:
+            issues.append("No successful fetch recorded yet")
+        else:
+            issues.append("Unable to determine last fetch time")
+        status = _worse_status(status, "DEGRADED")
+
+    if not running:
+        issues.append("Poller not running")
+        status = _worse_status(status, "ERROR")
+
+    if error_count >= ERROR_COUNT_ERROR_THRESHOLD:
+        issues.append(f"Repeated errors detected ({error_count} recent failures)")
+        status = _worse_status(status, "ERROR")
+    elif error_count >= ERROR_COUNT_WARN_THRESHOLD:
+        issues.append(f"Transient errors observed ({error_count} recent failure{'s' if error_count != 1 else ''})")
+        status = _worse_status(status, "DEGRADED")
+
+    if last_error and error_count:
+        issues.append(str(last_error))
+        status = _worse_status(status, "DEGRADED")
+
+    repo_label = Path(repo_path).name or repo_path
+
+    return {
+        **stats,
+        "status": status,
+        "issues": issues,
+        "age_seconds": age_seconds,
+        "repo": repo_label,
+    }
+
+
+def _build_health_response(poller_stats: List[Dict[str, Any]], coordinator_stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute overall health status and include annotated poller details."""
+
+    now = datetime.now()
+    annotated_pollers = [
+        _analyze_poller_health(stats, now)
+        for stats in poller_stats
+    ]
+
+    overall_status = "OK"
+    reasons: list[str] = []
+
+    if not annotated_pollers:
+        overall_status = "DEGRADED"
+        reasons.append("No threads pollers are currently registered")
+
+    for poller in annotated_pollers:
+        overall_status = _worse_status(overall_status, poller["status"])
+        if poller["status"] != "OK":
+            repo_name = poller.get("repo", poller.get("repo_path", "unknown"))
+            for issue in poller["issues"]:
+                reasons.append(f"{repo_name}: {issue}")
+
+    coordinator_detail = dict(coordinator_stats)
+    last_refresh_raw = coordinator_detail.get("last_refresh")
+    last_refresh_dt = _parse_iso_timestamp(last_refresh_raw)
+    coordinator_detail["last_refresh_age_seconds"] = (
+        max((now - last_refresh_dt).total_seconds(), 0)
+        if last_refresh_dt
+        else None
+    )
+
+    return {
+        "status": overall_status,
+        "timestamp": now.isoformat(),
+        "reasons": reasons,
+        "pollers": annotated_pollers,
+        "coordinator": coordinator_detail,
+    }
+
 
 def _get_parser(threads_base: str | None = None) -> ThreadParser:
     return ThreadParser(threads_base=threads_base)
@@ -2279,12 +2404,8 @@ async def health_check() -> JSONResponse:
     poller_stats = [poller.get_stats() for poller in _pollers]
     coordinator_stats = _coordinator.get_stats()
 
-    return JSONResponse({
-        "status": "ok",
-        "timestamp": datetime.now().isoformat(),
-        "pollers": poller_stats,
-        "coordinator": coordinator_stats,
-    })
+    health_payload = _build_health_response(poller_stats, coordinator_stats)
+    return JSONResponse(health_payload)
 
 
 @app.on_event("startup")
