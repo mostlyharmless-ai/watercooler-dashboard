@@ -1048,6 +1048,7 @@ INDEX_HTML = """<!doctype html>
             Show archived threads
           </label>
           <span class="toolbar-note">Default sort: open → highest priority → most recent.</span>
+          <span id="healthBadge" style="margin-right: 1rem; color: #94a3b8; font-size: 0.9rem;">Health: OK</span>
           <span id="liveIndicator" class="connection-indicator" aria-live="polite" data-state="connecting">Connecting…</span>
         </div>
         <section id="threadsContainer" class="thread-list" aria-live="polite"></section>
@@ -2187,6 +2188,33 @@ INDEX_HTML = """<!doctype html>
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#39;");
       }
+
+      // Health badge polling
+      function pollHealth() {
+        fetch("/api/health", { cache: "no-store" })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            const badge = document.getElementById("healthBadge");
+            if (!badge) return;
+            const status = (data.status || "UNKNOWN").toUpperCase();
+            const colors = { "OK": "#22c55e", "DEGRADED": "#f59e0b", "ERROR": "#ef4444" };
+            badge.style.color = colors[status] || "#94a3b8";
+            badge.textContent = "Health: " + status;
+            badge.title = (data.reasons && data.reasons.length > 0) ? data.reasons.join("\\n") : "All systems nominal";
+          })
+          .catch(function() {
+            const badge = document.getElementById("healthBadge");
+            if (badge) {
+              badge.style.color = "#ef4444";
+              badge.textContent = "Health: ERROR";
+            }
+          });
+      }
+
+      setTimeout(function() {
+        pollHealth();
+        setInterval(pollHealth, 60000);
+      }, 2000);
     </script>
   </body>
 </html>
