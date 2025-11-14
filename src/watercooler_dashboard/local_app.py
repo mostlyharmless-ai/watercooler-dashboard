@@ -540,14 +540,71 @@ INDEX_HTML = """<!doctype html>
       summary.thread-summary {
         list-style: none;
         display: grid;
-        grid-template-columns: auto 1fr auto;
+        grid-template-columns: auto auto 1fr auto;
         gap: 0.75rem 1rem;
         align-items: center;
         padding: 1.15rem 1.3rem;
-        cursor: pointer;
+        position: relative;
       }
       summary.thread-summary::-webkit-details-marker {
         display: none;
+      }
+      .thread-chevron {
+        width: 1.3rem;
+        height: 1.3rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 1rem;
+        transition: transform 0.2s ease, color 0.15s ease;
+        user-select: none;
+      }
+      .thread-chevron:hover {
+        color: var(--accent);
+      }
+      details.thread-card[open] .thread-chevron,
+      details.thread-card[open] summary .thread-chevron {
+        transform: rotate(90deg);
+      }
+      .thread-summary-content {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.75rem 1rem;
+        align-items: center;
+      }
+      .thread-meta-editable {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 0.9rem;
+        font-size: 0.85rem;
+        color: var(--text-muted);
+      }
+      .badge-editable {
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: background 0.15s ease, border 0.15s ease;
+        border: 1px solid transparent;
+      }
+      .badge-editable:hover {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .badge-editable-status {
+        position: relative;
+      }
+      .badge-editable-status select {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        cursor: pointer;
+        font-size: 0.72rem;
       }
       .summary-badge {
         width: 2.2rem;
@@ -732,8 +789,9 @@ INDEX_HTML = """<!doctype html>
       }
       .entries h3 {
         margin: 0;
-        font-size: 0.95rem;
-        color: var(--text-muted);
+        font-size: 1.08rem;
+        font-weight: 650;
+        color: var(--text);
       }
       details.entry {
         border: 1px solid rgba(15, 23, 42, 0.08);
@@ -741,23 +799,61 @@ INDEX_HTML = """<!doctype html>
         background: var(--surface);
       }
       summary.entry-summary {
-        padding: 0.7rem 0.85rem;
+        padding: 0.75rem 0.9rem;
         display: flex;
         flex-direction: column;
-        gap: 0.4rem;
-        cursor: pointer;
-        font-size: 0.9rem;
+        gap: 0.5rem;
+        font-size: 1rem;
+        font-weight: 560;
+        background: var(--surface-alt);
+        border-radius: 0.6rem;
+        transition: background 0.15s ease;
+        position: relative;
+      }
+      summary.entry-summary:hover {
+        background: rgba(15, 23, 42, 0.05);
       }
       summary.entry-summary::-webkit-details-marker { display: none; }
+      .entry-chevron {
+        position: absolute;
+        left: 0.9rem;
+        top: 0.75rem;
+        width: 1.2rem;
+        height: 1.2rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        transition: transform 0.2s ease, color 0.15s ease;
+        user-select: none;
+        z-index: 1;
+      }
+      .entry-chevron:hover {
+        color: var(--accent);
+      }
+      details.entry[open] .entry-chevron,
+      details.entry[open] summary .entry-chevron {
+        transform: rotate(90deg);
+      }
+      .entry-summary-content {
+        margin-left: 1.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
       .entry-meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 0.4rem 0.7rem;
+        gap: 0.45rem 0.9rem;
         color: var(--text-muted);
-        font-size: 0.82rem;
+        font-size: 0.88rem;
+        letter-spacing: 0.01em;
       }
       .entry-line {
-        font-weight: 600;
+        font-weight: 680;
+        color: var(--text);
       }
       .entry-body {
         padding: 0 0.85rem 0.95rem;
@@ -1566,19 +1662,34 @@ INDEX_HTML = """<!doctype html>
       }
 
       function buildThreadCard(thread, index, repo, shouldOpen = false, threadKey = null) {
-        const details = document.createElement("details");
-        details.className = "thread-card";
-        details.dataset.status = thread.statusNormalized || "";
-        details.dataset.priority = thread.priority || "";
+        const detail = document.createElement("details");
+        detail.className = "thread-card";
+        detail.dataset.status = thread.statusNormalized || "";
+        detail.dataset.priority = thread.priority || "";
         const identifier = threadKey || getThreadKey(thread, index);
         if (identifier) {
-          details.dataset.topic = identifier;
+          detail.dataset.topic = identifier;
         }
         if (shouldOpen && identifier) {
-          details.open = true;
+          detail.open = true;
         }
-        const summary = document.createElement("summary");
-        summary.className = "thread-summary";
+          const summary = document.createElement("summary");
+          summary.className = "thread-summary";
+        
+        // Add chevron first
+        const chevron = document.createElement("span");
+        chevron.className = "thread-chevron";
+        chevron.textContent = "▶";
+        chevron.setAttribute("aria-label", "Toggle thread");
+        
+        // Prevent default click behavior - only chevron will trigger expand
+        summary.addEventListener("click", (e) => {
+          const isChevron = e.target === chevron || e.target.closest(".thread-chevron");
+          const isEditable = e.target.closest(".badge-editable") || e.target.closest("select");
+          if (!isChevron && !isEditable) {
+            e.preventDefault();
+          }
+        });
 
         const badge = document.createElement("span");
         badge.className = "summary-badge";
@@ -1590,17 +1701,73 @@ INDEX_HTML = """<!doctype html>
         title.textContent = thread.title || thread.topic || "Untitled thread";
         heading.append(title);
 
+        // Editable meta line with inline status/priority editing
         const metaLine = document.createElement("div");
-        metaLine.className = "thread-meta";
-        const statusBadge = document.createElement("span");
-        statusBadge.className = "badge badge-status-" + (thread.statusNormalized || "unknown");
-        statusBadge.textContent = formatStatus(thread.status);
-        metaLine.append(statusBadge);
+        metaLine.className = "thread-meta-editable";
+        
+        // Inline status editor
+        const statusWrapper = document.createElement("span");
+        statusWrapper.className = "badge badge-status-" + (thread.statusNormalized || "unknown") + " badge-editable badge-editable-status";
+        statusWrapper.textContent = formatStatus(thread.status);
+        const statusSelect = document.createElement("select");
+        ["OPEN", "IN_REVIEW", "BLOCKED", "CLOSED"].forEach((option) => {
+          const opt = document.createElement("option");
+          opt.value = option;
+          opt.textContent = formatStatus(option);
+          if (option === (thread.status || "OPEN").toUpperCase()) opt.selected = true;
+          statusSelect.append(opt);
+        });
+        statusSelect.addEventListener("change", async (e) => {
+          e.stopPropagation();
+          try {
+            const updates = {
+              Status: statusSelect.value,
+              Priority: thread.priority || "P2",
+              Ball: thread.ballOwner || "",
+              Spec: thread.spec || "",
+              Topic: thread.topic || "",
+            };
+            await saveThreadMetadata(thread, updates);
+            flashStatus("Status updated");
+            await refreshData("manual");
+          } catch (error) {
+            flashStatus("Failed to update status", "error");
+          }
+        });
+        statusWrapper.append(statusSelect);
+        metaLine.append(statusWrapper);
 
-        const priorityBadge = document.createElement("span");
-        priorityBadge.className = "badge badge-priority";
-        priorityBadge.textContent = "Priority " + thread.priority;
-        metaLine.append(priorityBadge);
+        // Inline priority editor
+        const priorityWrapper = document.createElement("span");
+        priorityWrapper.className = "badge badge-priority badge-editable badge-editable-status";
+        priorityWrapper.textContent = "Priority " + thread.priority;
+        const prioritySelect = document.createElement("select");
+        PRIORITY_LEVELS.forEach((level) => {
+          const opt = document.createElement("option");
+          opt.value = level;
+          opt.textContent = level;
+          if (level === thread.priority) opt.selected = true;
+          prioritySelect.append(opt);
+        });
+        prioritySelect.addEventListener("change", async (e) => {
+          e.stopPropagation();
+          try {
+            const updates = {
+              Status: thread.status || "OPEN",
+              Priority: prioritySelect.value,
+              Ball: thread.ballOwner || "",
+              Spec: thread.spec || "",
+              Topic: thread.topic || "",
+            };
+            await saveThreadMetadata(thread, updates);
+            flashStatus("Priority updated");
+            await refreshData("manual");
+          } catch (error) {
+            flashStatus("Failed to update priority", "error");
+          }
+        });
+        priorityWrapper.append(prioritySelect);
+        metaLine.append(priorityWrapper);
 
         if (thread.hasNew) {
           const newBadge = document.createElement("span");
@@ -1625,18 +1792,18 @@ INDEX_HTML = """<!doctype html>
 
         const actions = buildThreadActions(thread, index, repo);
 
-        summary.append(badge, heading, actions);
-        details.append(summary);
+        summary.append(chevron, badge, heading, actions);
+        detail.append(summary);
 
         const body = document.createElement("div");
         body.className = "thread-detail";
         body.append(buildEditor(thread));
         body.append(buildEntryList(thread));
-        details.append(body);
+        detail.append(body);
 
         if (identifier) {
-          details.addEventListener("toggle", () => {
-            if (details.open) {
+          detail.addEventListener("toggle", () => {
+            if (detail.open) {
               state.openThreads.add(identifier);
             } else {
               state.openThreads.delete(identifier);
@@ -1645,7 +1812,7 @@ INDEX_HTML = """<!doctype html>
           });
         }
 
-        return details;
+        return detail;
       }
 
       function buildThreadActions(thread, index, repo) {
@@ -1895,14 +2062,33 @@ INDEX_HTML = """<!doctype html>
 
           const summary = document.createElement("summary");
           summary.className = "entry-summary";
+          
+          // Add chevron first
+          const chevron = document.createElement("span");
+          chevron.className = "entry-chevron";
+          chevron.textContent = "▶";
+          chevron.setAttribute("aria-label", "Toggle entry");
+          
+          // Prevent default click behavior - only chevron will trigger expand
+          summary.addEventListener("click", (e) => {
+            if (e.target !== chevron && !e.target.closest(".entry-chevron")) {
+              e.preventDefault();
+            }
+          });
+          summary.append(chevron);
+          
+          // Content wrapper
+          const content = document.createElement("div");
+          content.className = "entry-summary-content";
+          
           const headerLine = document.createElement("span");
           headerLine.className = "entry-line";
           headerLine.textContent = entry.entryLine || (entry.author ? entry.author : "Entry " + (index + 1));
-          summary.append(headerLine);
+          content.append(headerLine);
 
           const title = document.createElement("strong");
           title.textContent = entry.title || "Entry " + (index + 1);
-          summary.append(title);
+          content.append(title);
 
           const meta = document.createElement("div");
           meta.className = "entry-meta";
@@ -1911,7 +2097,8 @@ INDEX_HTML = """<!doctype html>
           if (entry.author) meta.append(createMeta("Author: " + entry.author));
           if (entry.timestamp) meta.append(createMeta(entry.timestamp));
 
-          summary.append(meta);
+          content.append(meta);
+          summary.append(content);
           detail.append(summary);
 
           const body = document.createElement("div");
